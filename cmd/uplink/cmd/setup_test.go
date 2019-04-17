@@ -115,3 +115,7 @@ func TestDefaultPortAppliedToSatelliteAddrWithPortColonButNoPort(t *testing.T) {
 	assert.Equal(t, "ahost:7777", setupCmd.Flags().Lookup("satellite-addr").Value.String(),
 		"satellite-addr should contain default port when no port specified")
 }
+
+func TestSaveEncriptionKey(t *testing.T) {
+	t.Skip("IMPLEMENT IT")
+}

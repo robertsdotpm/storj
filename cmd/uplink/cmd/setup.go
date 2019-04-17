@@ -209,3 +209,9 @@ func ApplyDefaultHostAndPortToAddr(address, defaultAddress string) (string, erro
 	// address is host:
 	return net.JoinHostPort(addressParts[0], defaultPort), nil
 }
+
+func SaveEncriptionKey(dirPath string, key []byte) error {
+	// TODO: if/v3-1541 => Implement it
+	// filename will be .enc.key
+	return nil
+}
