@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -428,7 +427,7 @@ CREATE TABLE storagenode_bandwidth_rollups (
 CREATE TABLE storagenode_storage_tallies (
 	storagenode_id bytea NOT NULL,
 	interval_start timestamp NOT NULL,
-	total bigint NOT NULL,
+	total double precision NOT NULL,
 	PRIMARY KEY ( storagenode_id, interval_start )
 );
 CREATE TABLE users (
@@ -685,7 +684,7 @@ CREATE TABLE storagenode_bandwidth_rollups (
 CREATE TABLE storagenode_storage_tallies (
 	storagenode_id BLOB NOT NULL,
 	interval_start TIMESTAMP NOT NULL,
-	total INTEGER NOT NULL,
+	total REAL NOT NULL,
 	PRIMARY KEY ( storagenode_id, interval_start )
 );
 CREATE TABLE users (
@@ -3084,7 +3083,7 @@ func (StoragenodeBandwidthRollup_Settled_Field) _Column() string { return "settl
 type StoragenodeStorageTally struct {
 	StoragenodeId []byte
 	IntervalStart time.Time
-	Total         uint64
+	Total         float64
 }
 
 func (StoragenodeStorageTally) _Table() string { return "storagenode_storage_tallies" }
@@ -3134,10 +3133,10 @@ func (StoragenodeStorageTally_IntervalStart_Field) _Column() string { return "in
 type StoragenodeStorageTally_Total_Field struct {
 	_set   bool
 	_null  bool
-	_value uint64
+	_value float64
 }
 
-func StoragenodeStorageTally_Total(v uint64) StoragenodeStorageTally_Total_Field {
+func StoragenodeStorageTally_Total(v float64) StoragenodeStorageTally_Total_Field {
 	return StoragenodeStorageTally_Total_Field{_set: true, _value: v}
 }
 
@@ -3600,10 +3599,54 @@ func __sqlbundle_Render(dialect __sqlbundle_Dialect, sql __sqlbundle_SQL, ops ..
 	return dialect.Rebind(out)
 }
 
-var __sqlbundle_reSpace = regexp.MustCompile(`\s+`)
+func __sqlbundle_flattenSQL(x string) string {
+	// trim whitespace from beginning and end
+	s, e := 0, len(x)-1
+	for s < len(x) && (x[s] == ' ' || x[s] == '\t' || x[s] == '\n') {
+		s++
+	}
+	for s <= e && (x[e] == ' ' || x[e] == '\t' || x[e] == '\n') {
+		e--
+	}
+	if s > e {
+		return ""
+	}
+	x = x[s : e+1]
 
-func __sqlbundle_flattenSQL(s string) string {
-	return strings.TrimSpace(__sqlbundle_reSpace.ReplaceAllString(s, " "))
+	// check for whitespace that needs fixing
+	wasSpace := false
+	for i := 0; i < len(x); i++ {
+		r := x[i]
+		justSpace := r == ' '
+		if (wasSpace && justSpace) || r == '\t' || r == '\n' {
+			// whitespace detected, start writing a new string
+			var result strings.Builder
+			result.Grow(len(x))
+			if wasSpace {
+				result.WriteString(x[:i-1])
+			} else {
+				result.WriteString(x[:i])
+			}
+			for p := i; p < len(x); p++ {
+				for p < len(x) && (x[p] == ' ' || x[p] == '\t' || x[p] == '\n') {
+					p++
+				}
+				result.WriteByte(' ')
+
+				start := p
+				for p < len(x) && !(x[p] == ' ' || x[p] == '\t' || x[p] == '\n') {
+					p++
+				}
+				result.WriteString(x[start:p])
+			}
+
+			return result.String()
+		}
+		wasSpace = justSpace
+	}
+
+	// no problematic whitespace found
+	return x
 }
 
 // this type is specially named to match up with the name returned by the
@@ -3682,6 +3725,8 @@ type __sqlbundle_Condition struct {
 func (*__sqlbundle_Condition) private() {}
 
 func (c *__sqlbundle_Condition) Render() string {
+	// TODO(jeff): maybe check if we can use placeholders instead of the
+	// literal null: this would make the templates easier.
 
 	switch {
 	case c.Equal && c.Null:
@@ -4141,6 +4186,29 @@ func (obj *postgresImpl) Create_BucketStorageTally(ctx context.Context,
 		return nil, obj.makeErr(err)
 	}
 	return bucket_storage_tally, nil
+
+}
+
+func (obj *postgresImpl) Create_StoragenodeStorageTally(ctx context.Context,
+	storagenode_storage_tally_storagenode_id StoragenodeStorageTally_StoragenodeId_Field,
+	storagenode_storage_tally_interval_start StoragenodeStorageTally_IntervalStart_Field,
+	storagenode_storage_tally_total StoragenodeStorageTally_Total_Field) (
+	storagenode_storage_tally *StoragenodeStorageTally, err error) {
+	__storagenode_id_val := storagenode_storage_tally_storagenode_id.value()
+	__interval_start_val := storagenode_storage_tally_interval_start.value()
+	__total_val := storagenode_storage_tally_total.value()
+
+	var __embed_stmt = __sqlbundle_Literal("INSERT INTO storagenode_storage_tallies ( storagenode_id, interval_start, total ) VALUES ( ?, ?, ? ) RETURNING storagenode_storage_tallies.storagenode_id, storagenode_storage_tallies.interval_start, storagenode_storage_tallies.total")
+
+	var __stmt = __sqlbundle_Render(obj.dialect, __embed_stmt)
+	obj.logStmt(__stmt, __storagenode_id_val, __interval_start_val, __total_val)
+
+	storagenode_storage_tally = &StoragenodeStorageTally{}
+	err = obj.driver.QueryRow(__stmt, __storagenode_id_val, __interval_start_val, __total_val).Scan(&storagenode_storage_tally.StoragenodeId, &storagenode_storage_tally.IntervalStart, &storagenode_storage_tally.Total)
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	return storagenode_storage_tally, nil
 
 }
 
@@ -5155,6 +5223,71 @@ func (obj *postgresImpl) All_StoragenodeBandwidthRollup_By_IntervalStart_Greater
 			return nil, obj.makeErr(err)
 		}
 		rows = append(rows, storagenode_bandwidth_rollup)
+	}
+	if err := __rows.Err(); err != nil {
+		return nil, obj.makeErr(err)
+	}
+	return rows, nil
+
+}
+
+func (obj *postgresImpl) All_StoragenodeStorageTally(ctx context.Context) (
+	rows []*StoragenodeStorageTally, err error) {
+
+	var __embed_stmt = __sqlbundle_Literal("SELECT storagenode_storage_tallies.storagenode_id, storagenode_storage_tallies.interval_start, storagenode_storage_tallies.total FROM storagenode_storage_tallies")
+
+	var __values []interface{}
+	__values = append(__values)
+
+	var __stmt = __sqlbundle_Render(obj.dialect, __embed_stmt)
+	obj.logStmt(__stmt, __values...)
+
+	__rows, err := obj.driver.Query(__stmt, __values...)
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	defer __rows.Close()
+
+	for __rows.Next() {
+		storagenode_storage_tally := &StoragenodeStorageTally{}
+		err = __rows.Scan(&storagenode_storage_tally.StoragenodeId, &storagenode_storage_tally.IntervalStart, &storagenode_storage_tally.Total)
+		if err != nil {
+			return nil, obj.makeErr(err)
+		}
+		rows = append(rows, storagenode_storage_tally)
+	}
+	if err := __rows.Err(); err != nil {
+		return nil, obj.makeErr(err)
+	}
+	return rows, nil
+
+}
+
+func (obj *postgresImpl) All_StoragenodeStorageTally_By_IntervalStart_GreaterOrEqual(ctx context.Context,
+	storagenode_storage_tally_interval_start_greater_or_equal StoragenodeStorageTally_IntervalStart_Field) (
+	rows []*StoragenodeStorageTally, err error) {
+
+	var __embed_stmt = __sqlbundle_Literal("SELECT storagenode_storage_tallies.storagenode_id, storagenode_storage_tallies.interval_start, storagenode_storage_tallies.total FROM storagenode_storage_tallies WHERE storagenode_storage_tallies.interval_start >= ?")
+
+	var __values []interface{}
+	__values = append(__values, storagenode_storage_tally_interval_start_greater_or_equal.value())
+
+	var __stmt = __sqlbundle_Render(obj.dialect, __embed_stmt)
+	obj.logStmt(__stmt, __values...)
+
+	__rows, err := obj.driver.Query(__stmt, __values...)
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	defer __rows.Close()
+
+	for __rows.Next() {
+		storagenode_storage_tally := &StoragenodeStorageTally{}
+		err = __rows.Scan(&storagenode_storage_tally.StoragenodeId, &storagenode_storage_tally.IntervalStart, &storagenode_storage_tally.Total)
+		if err != nil {
+			return nil, obj.makeErr(err)
+		}
+		rows = append(rows, storagenode_storage_tally)
 	}
 	if err := __rows.Err(); err != nil {
 		return nil, obj.makeErr(err)
@@ -6686,6 +6819,32 @@ func (obj *sqlite3Impl) Create_BucketStorageTally(ctx context.Context,
 
 }
 
+func (obj *sqlite3Impl) Create_StoragenodeStorageTally(ctx context.Context,
+	storagenode_storage_tally_storagenode_id StoragenodeStorageTally_StoragenodeId_Field,
+	storagenode_storage_tally_interval_start StoragenodeStorageTally_IntervalStart_Field,
+	storagenode_storage_tally_total StoragenodeStorageTally_Total_Field) (
+	storagenode_storage_tally *StoragenodeStorageTally, err error) {
+	__storagenode_id_val := storagenode_storage_tally_storagenode_id.value()
+	__interval_start_val := storagenode_storage_tally_interval_start.value()
+	__total_val := storagenode_storage_tally_total.value()
+
+	var __embed_stmt = __sqlbundle_Literal("INSERT INTO storagenode_storage_tallies ( storagenode_id, interval_start, total ) VALUES ( ?, ?, ? )")
+
+	var __stmt = __sqlbundle_Render(obj.dialect, __embed_stmt)
+	obj.logStmt(__stmt, __storagenode_id_val, __interval_start_val, __total_val)
+
+	__res, err := obj.driver.Exec(__stmt, __storagenode_id_val, __interval_start_val, __total_val)
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	__pk, err := __res.LastInsertId()
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	return obj.getLastStoragenodeStorageTally(ctx, __pk)
+
+}
+
 func (obj *sqlite3Impl) Create_CertRecord(ctx context.Context,
 	certRecord_publickey CertRecord_Publickey_Field,
 	certRecord_id CertRecord_Id_Field) (
@@ -7703,6 +7862,71 @@ func (obj *sqlite3Impl) All_StoragenodeBandwidthRollup_By_IntervalStart_GreaterO
 			return nil, obj.makeErr(err)
 		}
 		rows = append(rows, storagenode_bandwidth_rollup)
+	}
+	if err := __rows.Err(); err != nil {
+		return nil, obj.makeErr(err)
+	}
+	return rows, nil
+
+}
+
+func (obj *sqlite3Impl) All_StoragenodeStorageTally(ctx context.Context) (
+	rows []*StoragenodeStorageTally, err error) {
+
+	var __embed_stmt = __sqlbundle_Literal("SELECT storagenode_storage_tallies.storagenode_id, storagenode_storage_tallies.interval_start, storagenode_storage_tallies.total FROM storagenode_storage_tallies")
+
+	var __values []interface{}
+	__values = append(__values)
+
+	var __stmt = __sqlbundle_Render(obj.dialect, __embed_stmt)
+	obj.logStmt(__stmt, __values...)
+
+	__rows, err := obj.driver.Query(__stmt, __values...)
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	defer __rows.Close()
+
+	for __rows.Next() {
+		storagenode_storage_tally := &StoragenodeStorageTally{}
+		err = __rows.Scan(&storagenode_storage_tally.StoragenodeId, &storagenode_storage_tally.IntervalStart, &storagenode_storage_tally.Total)
+		if err != nil {
+			return nil, obj.makeErr(err)
+		}
+		rows = append(rows, storagenode_storage_tally)
+	}
+	if err := __rows.Err(); err != nil {
+		return nil, obj.makeErr(err)
+	}
+	return rows, nil
+
+}
+
+func (obj *sqlite3Impl) All_StoragenodeStorageTally_By_IntervalStart_GreaterOrEqual(ctx context.Context,
+	storagenode_storage_tally_interval_start_greater_or_equal StoragenodeStorageTally_IntervalStart_Field) (
+	rows []*StoragenodeStorageTally, err error) {
+
+	var __embed_stmt = __sqlbundle_Literal("SELECT storagenode_storage_tallies.storagenode_id, storagenode_storage_tallies.interval_start, storagenode_storage_tallies.total FROM storagenode_storage_tallies WHERE storagenode_storage_tallies.interval_start >= ?")
+
+	var __values []interface{}
+	__values = append(__values, storagenode_storage_tally_interval_start_greater_or_equal.value())
+
+	var __stmt = __sqlbundle_Render(obj.dialect, __embed_stmt)
+	obj.logStmt(__stmt, __values...)
+
+	__rows, err := obj.driver.Query(__stmt, __values...)
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	defer __rows.Close()
+
+	for __rows.Next() {
+		storagenode_storage_tally := &StoragenodeStorageTally{}
+		err = __rows.Scan(&storagenode_storage_tally.StoragenodeId, &storagenode_storage_tally.IntervalStart, &storagenode_storage_tally.Total)
+		if err != nil {
+			return nil, obj.makeErr(err)
+		}
+		rows = append(rows, storagenode_storage_tally)
 	}
 	if err := __rows.Err(); err != nil {
 		return nil, obj.makeErr(err)
@@ -8883,6 +9107,24 @@ func (obj *sqlite3Impl) getLastBucketStorageTally(ctx context.Context,
 
 }
 
+func (obj *sqlite3Impl) getLastStoragenodeStorageTally(ctx context.Context,
+	pk int64) (
+	storagenode_storage_tally *StoragenodeStorageTally, err error) {
+
+	var __embed_stmt = __sqlbundle_Literal("SELECT storagenode_storage_tallies.storagenode_id, storagenode_storage_tallies.interval_start, storagenode_storage_tallies.total FROM storagenode_storage_tallies WHERE _rowid_ = ?")
+
+	var __stmt = __sqlbundle_Render(obj.dialect, __embed_stmt)
+	obj.logStmt(__stmt, pk)
+
+	storagenode_storage_tally = &StoragenodeStorageTally{}
+	err = obj.driver.QueryRow(__stmt, pk).Scan(&storagenode_storage_tally.StoragenodeId, &storagenode_storage_tally.IntervalStart, &storagenode_storage_tally.Total)
+	if err != nil {
+		return nil, obj.makeErr(err)
+	}
+	return storagenode_storage_tally, nil
+
+}
+
 func (obj *sqlite3Impl) getLastCertRecord(ctx context.Context,
 	pk int64) (
 	certRecord *CertRecord, err error) {
@@ -9284,6 +9526,25 @@ func (rx *Rx) All_StoragenodeBandwidthRollup_By_IntervalStart_GreaterOrEqual(ctx
 	return tx.All_StoragenodeBandwidthRollup_By_IntervalStart_GreaterOrEqual(ctx, storagenode_bandwidth_rollup_interval_start_greater_or_equal)
 }
 
+func (rx *Rx) All_StoragenodeStorageTally(ctx context.Context) (
+	rows []*StoragenodeStorageTally, err error) {
+	var tx *Tx
+	if tx, err = rx.getTx(ctx); err != nil {
+		return
+	}
+	return tx.All_StoragenodeStorageTally(ctx)
+}
+
+func (rx *Rx) All_StoragenodeStorageTally_By_IntervalStart_GreaterOrEqual(ctx context.Context,
+	storagenode_storage_tally_interval_start_greater_or_equal StoragenodeStorageTally_IntervalStart_Field) (
+	rows []*StoragenodeStorageTally, err error) {
+	var tx *Tx
+	if tx, err = rx.getTx(ctx); err != nil {
+		return
+	}
+	return tx.All_StoragenodeStorageTally_By_IntervalStart_GreaterOrEqual(ctx, storagenode_storage_tally_interval_start_greater_or_equal)
+}
+
 func (rx *Rx) Create_AccountingRaw(ctx context.Context,
 	accounting_raw_node_id AccountingRaw_NodeId_Field,
 	accounting_raw_interval_end_time AccountingRaw_IntervalEndTime_Field,
@@ -9503,6 +9764,19 @@ func (rx *Rx) Create_SerialNumber(ctx context.Context,
 		return
 	}
 	return tx.Create_SerialNumber(ctx, serial_number_serial_number, serial_number_bucket_id, serial_number_expires_at)
+
+}
+
+func (rx *Rx) Create_StoragenodeStorageTally(ctx context.Context,
+	storagenode_storage_tally_storagenode_id StoragenodeStorageTally_StoragenodeId_Field,
+	storagenode_storage_tally_interval_start StoragenodeStorageTally_IntervalStart_Field,
+	storagenode_storage_tally_total StoragenodeStorageTally_Total_Field) (
+	storagenode_storage_tally *StoragenodeStorageTally, err error) {
+	var tx *Tx
+	if tx, err = rx.getTx(ctx); err != nil {
+		return
+	}
+	return tx.Create_StoragenodeStorageTally(ctx, storagenode_storage_tally_storagenode_id, storagenode_storage_tally_interval_start, storagenode_storage_tally_total)
 
 }
 
@@ -10046,6 +10320,13 @@ type Methods interface {
 		storagenode_bandwidth_rollup_interval_start_greater_or_equal StoragenodeBandwidthRollup_IntervalStart_Field) (
 		rows []*StoragenodeBandwidthRollup, err error)
 
+	All_StoragenodeStorageTally(ctx context.Context) (
+		rows []*StoragenodeStorageTally, err error)
+
+	All_StoragenodeStorageTally_By_IntervalStart_GreaterOrEqual(ctx context.Context,
+		storagenode_storage_tally_interval_start_greater_or_equal StoragenodeStorageTally_IntervalStart_Field) (
+		rows []*StoragenodeStorageTally, err error)
+
 	Create_AccountingRaw(ctx context.Context,
 		accounting_raw_node_id AccountingRaw_NodeId_Field,
 		accounting_raw_interval_end_time AccountingRaw_IntervalEndTime_Field,
@@ -10169,6 +10450,12 @@ type Methods interface {
 		serial_number_bucket_id SerialNumber_BucketId_Field,
 		serial_number_expires_at SerialNumber_ExpiresAt_Field) (
 		serial_number *SerialNumber, err error)
+
+	Create_StoragenodeStorageTally(ctx context.Context,
+		storagenode_storage_tally_storagenode_id StoragenodeStorageTally_StoragenodeId_Field,
+		storagenode_storage_tally_interval_start StoragenodeStorageTally_IntervalStart_Field,
+		storagenode_storage_tally_total StoragenodeStorageTally_Total_Field) (
+		storagenode_storage_tally *StoragenodeStorageTally, err error)
 
 	Create_UsedSerial(ctx context.Context,
 		used_serial_serial_number_id UsedSerial_SerialNumberId_Field,
